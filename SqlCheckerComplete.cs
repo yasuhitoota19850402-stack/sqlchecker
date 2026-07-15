@@ -191,45 +191,83 @@ class SqlChecker
 
     /// <summary>
     /// 2. CPU確認
-    ///    ・Intel製Coreシリーズ / AMD製Ryzenのみ対応
-    ///    ・ARMアーキテクチャは非対応（Surface Pro X 等）
-    ///    ・Atom / Celeron / Pentium 等は非対応
+    ///    Step1: ARMアーキテクチャ → 即NG
+    ///    Step2: ブランド文字列（Core / Ryzen 以外）→ NG
+    ///    Step3: 簡易スコア（MaxClockSpeed × 論理コア数）
+    ///           20,000以上 → OK（Core i5相当以上）
+    ///           12,000〜   → WARN（Core i3・旧世代i5相当）
+    ///           12,000未満 → NG
     /// </summary>
     static void CheckCpu(DetectionResult r)
     {
+        // 簡易スコア閾値
+        const long SCORE_OK   = 20_000;  // 例) Core i5-8250U: 3400MHz×8=27,200
+        const long SCORE_WARN = 12_000;  // 例) Core i3-6100:  3700MHz×4=14,800
+
         try
         {
             using var searcher = new ManagementObjectSearcher(
-                "SELECT Name, Architecture FROM Win32_Processor");
+                "SELECT Name, Architecture, MaxClockSpeed, NumberOfLogicalProcessors " +
+                "FROM Win32_Processor");
+
             foreach (ManagementObject mo in searcher.Get())
             {
-                string cpuName = mo["Name"]?.ToString() ?? "(不明)";
+                string cpuName  = mo["Name"]?.ToString() ?? "(不明)";
+                uint   arch     = (uint)(mo["Architecture"]              ?? 9u);
+                uint   clockMhz = (uint)(mo["MaxClockSpeed"]             ?? 0u);
+                uint   cores    = (uint)(mo["NumberOfLogicalProcessors"] ?? 0u);
+                long   score    = (long)clockMhz * cores;
 
-                // Architecture: 0=x86, 9=x64, 12=ARM64
-                uint arch = (uint)(mo["Architecture"] ?? 9u);
-                bool isArm = (arch == 12);
-
+                bool isArm   = (arch == 12);
                 bool isCore  = cpuName.IndexOf("Core",  StringComparison.OrdinalIgnoreCase) >= 0;
                 bool isRyzen = cpuName.IndexOf("Ryzen", StringComparison.OrdinalIgnoreCase) >= 0;
 
+                // ── Step1: ARM → 即NG ────────────────────────────
                 if (isArm)
                 {
                     r.SpecDetails.Add(
                         $"❌ CPU: {cpuName}" + Environment.NewLine +
-                        "   → ARMアーキテクチャのCPUは非対応です（ARM版Windows11も非対応）。");
+                        "   → ARMアーキテクチャは非対応です（ARM版Windows11も非対応）。");
                     r.IsSpecOk = false;
+                    continue;
                 }
-                else if (!isCore && !isRyzen)
+
+                // ── Step2: ブランド文字列チェック ────────────────
+                if (!isCore && !isRyzen)
                 {
                     r.SpecDetails.Add(
                         $"❌ CPU: {cpuName}" + Environment.NewLine +
-                        "   → Intel製CoreシリーズまたはAMD製Ryzenのみ対応です。" + Environment.NewLine +
-                        "     Celeron / Pentium / Atom 等は非対応です。");
+                        "   → Intel Core / AMD Ryzen 以外は非対応です。" + Environment.NewLine +
+                        $"   （参考スコア: {score:N0}）");
                     r.IsSpecOk = false;
+                    continue;
+                }
+
+                // ── Step3: 簡易スコア判定 ────────────────────────
+                string scoreInfo =
+                    $"クロック {clockMhz:N0} MHz × {cores} コア = 簡易スコア {score:N0}";
+
+                if (score >= SCORE_OK)
+                {
+                    r.SpecDetails.Add(
+                        $"✅ CPU: {cpuName}" + Environment.NewLine +
+                        $"   {scoreInfo}（Core i5相当以上）");
+                }
+                else if (score >= SCORE_WARN)
+                {
+                    r.SpecDetails.Add(
+                        $"⚠️ CPU: {cpuName}" + Environment.NewLine +
+                        $"   {scoreInfo}" + Environment.NewLine +
+                        "   Core i5相当を下回っています。動作は可能ですが推奨外です。");
+                    r.IsSpecWarn = true;
                 }
                 else
                 {
-                    r.SpecDetails.Add($"✅ CPU: {cpuName}（条件適合）");
+                    r.SpecDetails.Add(
+                        $"❌ CPU: {cpuName}" + Environment.NewLine +
+                        $"   {scoreInfo}" + Environment.NewLine +
+                        "   Core i5相当を大きく下回っています。導入は推奨できません。");
+                    r.IsSpecOk = false;
                 }
             }
         }
