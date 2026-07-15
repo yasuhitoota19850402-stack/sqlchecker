@@ -1,0 +1,41 @@
+name: Build LinQ2Checker (単一EXE)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    # WinForms / WMI / .NET Framework 4.8 のため Windows必須
+    runs-on: windows-latest
+
+    steps:
+      # 1. チェックアウト
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. .NET SDK（net48ビルドは .NET SDK 8 で対応）
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # 3. NuGet復元（ILRepack含む）
+      - name: Restore
+        run: dotnet restore SqlChecker/SqlChecker.csproj
+
+      # 4. Releaseビルド（ILRepackが自動でDLLをEXEにマージ）
+      - name: Build
+        run: dotnet build SqlChecker/SqlChecker.csproj --configuration Release --no-restore
+
+      # 5. EXE単体だけをアーティファクトに保存
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinQ2Checker
+          # ILRepackマージ済みの単一EXEだけを対象にする
+          path: SqlChecker/bin/Release/net48/LinQ2Checker.exe
+          retention-days: 90
